@@ -104,7 +104,9 @@ def save_switch_states():
         "fp_ui": modules.globals.fp_ui,
         "show_fps": modules.globals.show_fps,
         "mouth_mask": modules.globals.mouth_mask,
+        "eye_mask": modules.globals.eyes_mask,
         "show_mouth_mask_box": modules.globals.show_mouth_mask_box,
+        "show_eye_mask_box": modules.globals.show_eye_mask_box
     }
     with open("switch_states.json", "w") as f:
         json.dump(switch_states, f)
@@ -126,9 +128,11 @@ def load_switch_states():
         modules.globals.fp_ui = switch_states.get("fp_ui", {"face_enhancer": False})
         modules.globals.show_fps = switch_states.get("show_fps", False)
         modules.globals.mouth_mask = switch_states.get("mouth_mask", False)
+        modules.globals.eyes_mask = switch_states.get("eyes_mask", True)
         modules.globals.show_mouth_mask_box = switch_states.get(
             "show_mouth_mask_box", False
         )
+        modules.globals.show_eye_mask_box = switch_states.get("show_eye_mask_box", False)
     except FileNotFoundError:
         # If the file doesn't exist, use default values
         pass
@@ -214,18 +218,18 @@ def create_root(start: Callable[[], None], destroy: Callable[[], None]) -> ctk.C
     )
     enhancer_switch.place(relx=0.1, rely=0.7)
 
-    keep_audio_value = ctk.BooleanVar(value=modules.globals.keep_audio)
-    keep_audio_switch = ctk.CTkSwitch(
+    eyes_mask_value = ctk.BooleanVar(value=modules.globals.eyes_mask)
+    eyes_mask_switch = ctk.CTkSwitch(
         root,
-        text=_("Keep audio"),
-        variable=keep_audio_value,
+        text=_("Eyes Mask"),
+        variable=eyes_mask_value,
         cursor="hand2",
         command=lambda: (
-            setattr(modules.globals, "keep_audio", keep_audio_value.get()),
+            setattr(modules.globals, "eyes_mask", eyes_mask_value.get()),
             save_switch_states(),
         ),
     )
-    keep_audio_switch.place(relx=0.6, rely=0.6)
+    eyes_mask_switch.place(relx=0.6, rely=0.6)
 
     many_faces_value = ctk.BooleanVar(value=modules.globals.many_faces)
     many_faces_switch = ctk.CTkSwitch(
@@ -240,18 +244,18 @@ def create_root(start: Callable[[], None], destroy: Callable[[], None]) -> ctk.C
     )
     many_faces_switch.place(relx=0.6, rely=0.65)
 
-    color_correction_value = ctk.BooleanVar(value=modules.globals.color_correction)
-    color_correction_switch = ctk.CTkSwitch(
+    eye_mask_box_value = ctk.BooleanVar(value=modules.globals.show_eye_mask_box)
+    eye_mask_box_switch = ctk.CTkSwitch(
         root,
-        text=_("Fix Blueish Cam"),
-        variable=color_correction_value,
+        text=_("Show Eyes Mask"),
+        variable=eye_mask_box_value,
         cursor="hand2",
         command=lambda: (
-            setattr(modules.globals, "color_correction", color_correction_value.get()),
+            setattr(modules.globals, "show_eye_mask_box", eye_mask_box_value.get()),
             save_switch_states(),
         ),
     )
-    color_correction_switch.place(relx=0.6, rely=0.70)
+    eye_mask_box_switch.place(relx=0.6, rely=0.70)
 
     #    nsfw_value = ctk.BooleanVar(value=modules.globals.nsfw_filter)
     #    nsfw_switch = ctk.CTkSwitch(root, text='NSFW filter', variable=nsfw_value, cursor='hand2', command=lambda: setattr(modules.globals, 'nsfw_filter', nsfw_value.get()))
@@ -429,7 +433,7 @@ def create_source_target_popup(
             POPUP.destroy()
             select_output_path(start)
         else:
-            update_pop_status("At least 1 source with target is required!")
+            update_pop_status("Atleast 1 source with target is required!")
 
     scrollable_frame = ctk.CTkScrollableFrame(
         POPUP, width=POPUP_SCROLL_WIDTH, height=POPUP_SCROLL_HEIGHT
@@ -489,7 +493,7 @@ def update_popup_source(
     global source_label_dict
 
     source_path = ctk.filedialog.askopenfilename(
-        title=_("select a source image"),
+        title=_("select an source image"),
         initialdir=RECENT_DIRECTORY_SOURCE,
         filetypes=[img_ft],
     )
@@ -584,7 +588,7 @@ def select_source_path() -> None:
 
     PREVIEW.withdraw()
     source_path = ctk.filedialog.askopenfilename(
-        title=_("select a source image"),
+        title=_("select an source image"),
         initialdir=RECENT_DIRECTORY_SOURCE,
         filetypes=[img_ft],
     )
@@ -627,7 +631,7 @@ def select_target_path() -> None:
 
     PREVIEW.withdraw()
     target_path = ctk.filedialog.askopenfilename(
-        title=_("select a target image or video"),
+        title=_("select an target image or video"),
         initialdir=RECENT_DIRECTORY_TARGET,
         filetypes=[img_ft, vid_ft],
     )
@@ -1108,7 +1112,7 @@ def update_webcam_source(
     global source_label_dict_live
 
     source_path = ctk.filedialog.askopenfilename(
-        title=_("select a source image"),
+        title=_("select an source image"),
         initialdir=RECENT_DIRECTORY_SOURCE,
         filetypes=[img_ft],
     )
@@ -1160,7 +1164,7 @@ def update_webcam_target(
     global target_label_dict_live
 
     target_path = ctk.filedialog.askopenfilename(
-        title=_("select a target image"),
+        title=_("select an target image"),
         initialdir=RECENT_DIRECTORY_SOURCE,
         filetypes=[img_ft],
     )

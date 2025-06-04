@@ -1,10 +1,17 @@
 from typing import Any, List
+import logging
+
+# Set up logging for debugging
+logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+#from unittest.mock import right
+
 import cv2
 import insightface
 import threading
 import numpy as np
 import modules.globals
-import logging
 import modules.processors.frame.core
 from modules.core import update_status
 from modules.face_analyser import get_one_face, get_many_faces, default_source_face
@@ -20,7 +27,7 @@ import os
 FACE_SWAPPER = None
 THREAD_LOCK = threading.Lock()
 NAME = "DLC.FACE-SWAPPER"
-
+EXTENSION_FACTOR = 2
 abs_dir = os.path.dirname(os.path.abspath(__file__))
 models_dir = os.path.join(
     os.path.dirname(os.path.dirname(os.path.dirname(abs_dir))), "models"
@@ -75,25 +82,56 @@ def swap_face(source_face: Face, target_face: Face, temp_frame: Frame) -> Frame:
         temp_frame, target_face, source_face, paste_back=True
     )
 
-    if modules.globals.mouth_mask:
-        # Create a mask for the target face
-        face_mask = create_face_mask(target_face, temp_frame)
+    # Eye preservation
+    if getattr(modules.globals, 'eyes_mask', False):
+        try:
+            face_mask = create_face_mask(target_face, temp_frame)
+            if face_mask is None:
+                logger.warning("Face mask creation failed, skipping eye preservation")
+            else:
+                (
+                    eye_mask,
+                    left_eye_cutout,
+                    left_eye_box,
+                    left_eye_polygon,
+                    right_eye_cutout,
+                    right_eye_box,
+                    right_eye_polygon
+                ) = create_eye_masks(target_face, temp_frame)
 
-        # Create the mouth mask
-        mouth_mask, mouth_cutout, mouth_box, lower_lip_polygon = (
-            create_lower_mouth_mask(target_face, temp_frame)
-        )
+                swapped_frame = apply_eye_area(
+                    swapped_frame,
+                    left_eye_cutout,
+                    left_eye_box,
+                    right_eye_cutout,
+                    right_eye_box,
+                    face_mask,
+                    left_eye_polygon,
+                    right_eye_polygon
+                )
 
-        # Apply the mouth area
-        swapped_frame = apply_mouth_area(
-            swapped_frame, mouth_cutout, mouth_box, face_mask, lower_lip_polygon
-        )
+                if getattr(modules.globals, 'show_eye_mask_box', False):
+                    swapped_frame = draw_eye_mask_visualization(
+                        swapped_frame, target_face, (eye_mask, left_eye_box, right_eye_box, left_eye_polygon, right_eye_polygon)
+                    )
+        except Exception as e:
+            logger.error(f"Eye preservation failed: {str(e)}")
 
-        if modules.globals.show_mouth_mask_box:
-            mouth_mask_data = (mouth_mask, mouth_cutout, mouth_box, lower_lip_polygon)
-            swapped_frame = draw_mouth_mask_visualization(
-                swapped_frame, target_face, mouth_mask_data
-            )
+    # Mouth preservation
+    if getattr(modules.globals, 'mouth_mask', False):
+        try:
+            face_mask = create_face_mask(target_face, temp_frame)
+            if face_mask is None:
+                logger.warning("Face mask creation failed, skipping mouth preservation")
+            else:
+                mouth_mask, mouth_cutout, mouth_box, lower_lip_polygon = create_lower_mouth_mask(target_face, temp_frame)
+                swapped_frame = apply_mouth_area(swapped_frame, mouth_cutout, mouth_box, face_mask, lower_lip_polygon)
+
+                if getattr(modules.globals, 'show_mouth_mask_box', False):
+                    mouth_mask_data = (mouth_mask, mouth_cutout, mouth_box, lower_lip_polygon)
+                    swapped_frame = draw_mouth_mask_visualization(swapped_frame, target_face, mouth_mask_data)
+        except Exception as e:
+            logger.error(f"Mouth preservation failed: {str(e)}")
 
     return swapped_frame
 
@@ -106,18 +144,12 @@ def process_frame(source_face: Face, temp_frame: Frame) -> Frame:
         many_faces = get_many_faces(temp_frame)
         if many_faces:
             for target_face in many_faces:
-                if source_face and target_face:
-                    temp_frame = swap_face(source_face, target_face, temp_frame)
-                else:
-                    print("Face detection failed for target/source.")
+                temp_frame = swap_face(source_face, target_face, temp_frame)
     else:
         target_face = get_one_face(temp_frame)
-        if target_face and source_face:
+        if target_face:
             temp_frame = swap_face(source_face, target_face, temp_frame)
-        else:
-            logging.error("Face detection failed for target or source.")
     return temp_frame
-
 
 
 def process_frame_v2(temp_frame: Frame, temp_frame_path: str = "") -> Frame:
@@ -263,7 +295,223 @@ def process_video(source_path: str, temp_frame_paths: List[str]) -> None:
         source_path, temp_frame_paths, process_frames
     )
 
+# retain eyes
+def create_eye_masks(face: Face, frame: Frame) -> tuple[np.ndarray, np.ndarray, tuple[int, int, int, int], np.ndarray, np.ndarray, np.ndarray, tuple[int, int, int, int], np.ndarray]:
+    mask = np.zeros(frame.shape[:2], dtype=np.uint8)
+    left_eye_cutout = None
+    right_eye_cutout = None
+    left_eye_polygon = None
+    right_eye_polygon = None
+    left_eye_box = None
+    right_eye_box = None
 
+    landmarks = face.landmark_2d_106
+    if landmarks is not None:
+        #left_eye_indices = [87, 88, 89, 90, 91, 92, 93, 94, 95, 87]  # Left eye loop
+        #right_eye_indices = [33, 34, 35, 36, 37, 38, 39, 40, 41, 33]  # Right eye loop
+        left_eye_indices = [89, 95, 94, 96, 93, 91, 87, 90, 89]
+        right_eye_indices = [39, 37, 33, 36, 35, 41, 40, 42, 39]
+        mask_down_size = getattr(modules.globals, 'mask_down_size', modules.globals.mask_down_size)
+        mask_size = getattr(modules.globals, 'mask_size', modules.globals.mask_size)
+
+        # Process left eye
+        left_eye_landmarks = landmarks[left_eye_indices].astype(np.float32)
+        left_eye_center = np.mean(left_eye_landmarks, axis=0)
+        expansion_factor = 1 + mask_down_size * 1.5  # Increase expansion for larger initial coverage
+        expanded_left_eye = (left_eye_landmarks - left_eye_center) * expansion_factor + left_eye_center
+
+        # Extend eye landmarks outward, similar to mouth's toplip and chin extensions
+        eye_extension = mask_size * EXTENSION_FACTOR  # Match mouth's toplip_extension scale
+        for i in range(len(expanded_left_eye)):
+            direction = expanded_left_eye[i] - left_eye_center
+            direction = direction / np.linalg.norm(direction) if np.linalg.norm(direction) > 0 else direction
+            expanded_left_eye[i] += direction * eye_extension
+
+        # Extend upper and lower eyelids specifically
+        upper_eyelid_indices = [0, 1, 2, 3]  # Approximate upper eyelid points (87, 88, 89, 90)
+        lower_eyelid_indices = [5, 6, 7, 8]  # Approximate lower eyelid points (92, 93, 94, 95)
+        eyelid_extension = eye_extension * 0.5  # Smaller extension for eyelids
+        for idx in upper_eyelid_indices:
+            direction = expanded_left_eye[idx] - left_eye_center
+            direction = direction / np.linalg.norm(direction) if np.linalg.norm(direction) > 0 else direction
+            expanded_left_eye[idx] += direction * eyelid_extension
+        for idx in lower_eyelid_indices:
+            direction = expanded_left_eye[idx] - left_eye_center
+            direction = direction / np.linalg.norm(direction) if np.linalg.norm(direction) > 0 else direction
+            expanded_left_eye[idx] += direction * eyelid_extension
+
+        expanded_left_eye = expanded_left_eye.astype(np.int32)
+        min_x_left, min_y_left = np.min(expanded_left_eye, axis=0)
+        max_x_left, max_y_left = np.max(expanded_left_eye, axis=0)
+        padding = int((max_x_left - min_x_left) * 0.15)  # Increase padding to 15% for larger coverage
+        min_x_left = max(0, int(min_x_left - padding))
+        min_y_left = max(0, int(min_y_left - padding))
+        max_x_left = min(frame.shape[1], int(max_x_left + padding))
+        max_y_left = min(frame.shape[0], int(max_y_left + padding))
+
+        if max_x_left <= min_x_left:
+            max_x_left = min_x_left + 1
+        if max_y_left <= min_y_left:
+            max_y_left = min_y_left + 1
+
+        left_mask_roi = np.zeros((max_y_left - min_y_left, max_x_left - min_x_left), dtype=np.uint8)
+        cv2.fillPoly(left_mask_roi, [expanded_left_eye - [min_x_left, min_y_left]], 255)
+        left_mask_roi = cv2.GaussianBlur(left_mask_roi, (15, 15), 5)
+        mask[min_y_left:max_y_left, min_x_left:max_x_left] = np.maximum(
+            mask[min_y_left:max_y_left, min_x_left:max_x_left], left_mask_roi
+        )
+        left_eye_cutout = frame[min_y_left:max_y_left, min_x_left:max_x_left].copy()
+        left_eye_polygon = expanded_left_eye.astype(np.int32)
+        left_eye_box = (min_x_left, min_y_left, max_x_left, max_y_left)
+
+        # Process right eye
+        right_eye_landmarks = landmarks[right_eye_indices].astype(np.float32)
+        right_eye_center = np.mean(right_eye_landmarks, axis=0)
+        expanded_right_eye = (right_eye_landmarks - right_eye_center) * expansion_factor + right_eye_center
+
+        for i in range(len(expanded_right_eye)):
+            direction = expanded_right_eye[i] - right_eye_center
+            direction = direction / np.linalg.norm(direction) if np.linalg.norm(direction) > 0 else direction
+            expanded_right_eye[i] += direction * eye_extension
+
+        # Extend upper and lower eyelids for right eye
+        upper_eyelid_indices = [0, 1, 2, 3]  # Approximate upper eyelid points (33, 34, 35, 36)
+        lower_eyelid_indices = [5, 6, 7, 8]  # Approximate lower eyelid points (38, 39, 40, 41)
+        for idx in upper_eyelid_indices:
+            direction = expanded_right_eye[idx] - right_eye_center
+            direction = direction / np.linalg.norm(direction) if np.linalg.norm(direction) > 0 else direction
+            expanded_right_eye[idx] += direction * eyelid_extension
+        for idx in lower_eyelid_indices:
+            direction = expanded_right_eye[idx] - right_eye_center
+            direction = direction / np.linalg.norm(direction) if np.linalg.norm(direction) > 0 else direction
+            expanded_right_eye[idx] += direction * eyelid_extension
+        expanded_right_eye = expanded_right_eye.astype(np.int32)
+        min_x_right, min_y_right = np.min(expanded_right_eye, axis=0)
+        max_x_right, max_y_right = np.max(expanded_right_eye, axis=0)
+        padding = int((max_x_right - min_x_right) * 0.15)  # Increase padding to 15%
+        min_x_right = max(0, int(min_x_right - padding))
+        min_y_right = max(0, int(min_y_right - padding))
+        max_x_right = min(frame.shape[1], int(max_x_right + padding))
+        max_y_right = min(frame.shape[0], int(max_y_right + padding))
+
+        if max_x_right <= min_x_right:
+            max_x_right = min_x_right + 1
+        if max_y_right <= min_y_right:
+            max_y_right = min_y_right + 1
+
+        right_mask_roi = np.zeros((max_y_right - min_y_right, max_x_right - min_x_right), dtype=np.uint8)
+        cv2.fillPoly(right_mask_roi, [expanded_right_eye - [min_x_right, min_y_right]], 255)
+        right_mask_roi = cv2.GaussianBlur(right_mask_roi, (15, 15), 5)
+        mask[min_y_right:max_y_right, min_x_right:max_x_right] = np.maximum(
+            mask[min_y_right:max_y_right, min_x_right:max_x_right], right_mask_roi
+        )
+        right_eye_cutout = frame[min_y_right:max_y_right, min_x_right:max_x_right].copy()
+        right_eye_polygon = expanded_right_eye.astype(np.int32)
+        right_eye_box = (min_x_right, min_y_right, max_x_right, max_y_right)
+
+    else:
+        logger.warning("No landmarks detected for face")
+
+    return mask, left_eye_cutout, left_eye_box, left_eye_polygon, right_eye_cutout, right_eye_box, right_eye_polygon
+
+
+def apply_eye_area(
+    frame: np.ndarray,
+    left_eye_cutout: np.ndarray,
+    left_eye_box: tuple[int, int, int, int],
+    right_eye_cutout: np.ndarray,
+    right_eye_box: tuple[int, int, int, int],
+    face_mask: np.ndarray,
+    left_eye_polygon: np.ndarray,
+    right_eye_polygon: np.ndarray
+) -> np.ndarray:
+    for eye_cutout, eye_box, eye_polygon in [
+        (left_eye_cutout, left_eye_box, left_eye_polygon),
+        (right_eye_cutout, right_eye_box, right_eye_polygon)
+    ]:
+        if eye_cutout is None or eye_box is None or eye_polygon is None or face_mask is None:
+            continue
+
+        min_x, min_y, max_x, max_y = eye_box
+        box_width = max_x - min_x
+        box_height = max_y - min_y
+
+        try:
+            resized_eye_cutout = cv2.resize(eye_cutout, (box_width, box_height))
+            roi = frame[min_y:max_y, min_x:max_x]
+
+            if roi.shape != resized_eye_cutout.shape:
+                resized_eye_cutout = cv2.resize(resized_eye_cutout, (roi.shape[1], roi.shape[0]))
+
+            color_corrected_eye = apply_color_transfer(resized_eye_cutout, roi)
+
+            polygon_mask = np.zeros(roi.shape[:2], dtype=np.uint8)
+            adjusted_polygon = eye_polygon - [min_x, min_y]
+            cv2.fillPoly(polygon_mask, [adjusted_polygon], 255)
+
+            feather_amount = min(
+                30,
+                box_width // modules.globals.mask_feather_ratio,
+                box_height // modules.globals.mask_feather_ratio,
+            )
+            feathered_mask = cv2.GaussianBlur(polygon_mask.astype(float), (0, 0), feather_amount)
+            feathered_mask = feathered_mask / feathered_mask.max()
+
+            face_mask_roi = face_mask[min_y:max_y, min_x:max_x]
+            combined_mask = feathered_mask * (face_mask_roi / 255.0)
+            combined_mask = combined_mask[:, :, np.newaxis]
+
+            blended = (color_corrected_eye * combined_mask + roi * (1 - combined_mask)).astype(np.uint8)
+
+            face_mask_3channel = np.repeat(face_mask_roi[:, :, np.newaxis], 3, axis=2) / 255.0
+            final_blend = blended * face_mask_3channel + roi * (1 - face_mask_3channel)
+
+            frame[min_y:max_y, min_x:max_x] = final_blend.astype(np.uint8)
+        except Exception:
+            pass
+
+    return frame
+
+def draw_eye_mask_visualization(
+    frame: Frame, face: Face, eye_mask_data: tuple[np.ndarray, tuple[int, int, int, int], tuple[int, int, int, int], np.ndarray, np.ndarray]
+) -> Frame:
+    landmarks = face.landmark_2d_106
+    if landmarks is not None and eye_mask_data is not None:
+        mask, left_eye_box, right_eye_box, left_eye_polygon, right_eye_polygon = eye_mask_data
+        vis_frame = frame.copy()
+
+        for box, polygon, label in [
+            (left_eye_box, left_eye_polygon, "Left Eye Mask"),
+            (right_eye_box, right_eye_polygon, "Right Eye Mask")
+        ]:
+            min_x, min_y, max_x, max_y = box
+            min_x, min_y = max(0, min_x), max(0, min_y)
+            max_x, max_y = min(vis_frame.shape[1], max_x), min(vis_frame.shape[0], max_y)
+
+            mask_region = mask[min_y:max_y, min_x:max_x]
+            vis_region = vis_frame[min_y:max_y, min_x:max_x]
+
+            cv2.polylines(vis_frame, [polygon], True, (0, 255, 0), 2)
+
+            feather_amount = max(1, min(30, (max_x - min_x) // modules.globals.mask_feather_ratio, (max_y - min_y) // modules.globals.mask_feather_ratio))
+            kernel_size = 2 * feather_amount + 1
+            feathered_mask = cv2.GaussianBlur(mask_region.astype(float), (kernel_size, kernel_size), 0)
+            feathered_mask = (feathered_mask / feathered_mask.max() * 255).astype(np.uint8)
+
+            cv2.putText(
+                vis_frame,
+                label,
+                (min_x, min_y - 10),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (255, 255, 255),
+                1,
+            )
+
+        return vis_frame
+    return frame
+
+# retain mouth
 def create_lower_mouth_mask(
     face: Face, frame: Frame
 ) -> (np.ndarray, np.ndarray, tuple, np.ndarray):
